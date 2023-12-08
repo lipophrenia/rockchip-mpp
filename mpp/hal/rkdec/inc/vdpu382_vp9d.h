@@ -281,11 +281,7 @@ typedef struct Vdpu382RegVp9dAddr_t {
 
     RK_U32  reg197_cabactbl_base;
 
-    RK_U32  reg198_scale_down_luma_base;
-
-    RK_U32  reg199_scale_down_chorme_base;
-
-    RK_U32  reg200_204reserve[5];
+    RK_U32  reg198_204reserve[7];
 
     struct SWREG205_DEBUG_INFO {
         RK_U32      force_softreset_valid   : 1;

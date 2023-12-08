@@ -255,7 +255,6 @@ typedef struct VP9Context {
     MppBufSlots slots;
     MppBufSlots packet_slots;
     MppDecCfgSet *cfg;
-    const MppDecHwCap *hw_info;
     HalDecTask *task;
     RK_S32 eos;       ///< current packet contains an EOS/EOB NAL
     RK_S64 pts;

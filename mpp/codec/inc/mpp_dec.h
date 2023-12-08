@@ -58,12 +58,7 @@ MPP_RET mpp_dec_callback(MppDec ctx, MppDecEvent event, void *arg);
 MPP_RET mpp_dec_set_cfg_by_cmd(MppDecCfgSet *set, MpiCmd cmd, void *param);
 MPP_RET mpp_dec_set_cfg(MppDecCfgSet *dst, MppDecCfgSet *src);
 
-/*
- * return positive value for the number of decoded frame
- * return zero           for decoding success but no frame decoded
- * return negtive value  for decoding flow failed
- */
-MPP_RET mpp_dec_decode(MppDec ctx, MppPacket packet);
+MPP_RET mpp_dec_decode(MppDec ctx, MppPacket packet, MppFrame *frame);
 
 #ifdef __cplusplus
 }

@@ -28,7 +28,6 @@
 
 #include "jpegd_api.h"
 #include "jpegd_parser.h"
-#include "mpp_dec_cb_param.h"
 
 RK_U32 jpegd_debug = 0x0;
 
@@ -277,7 +276,7 @@ static MPP_RET jpegd_decode_dht(JpegdCtx *ctx)
         if (table_type == HUFFMAN_TABLE_TYPE_DC) {
             DcTable *ptr = &(syntax->dc_table[table_id]);
 
-            syntax->htbl_entry |= 1 << (table_id * 2);
+            syntax->htbl_entry++;
 
             for (i = 0; i < num; i++) {
                 READ_BITS(gb, 8, &value);
@@ -288,7 +287,7 @@ static MPP_RET jpegd_decode_dht(JpegdCtx *ctx)
         } else {
             AcTable *ptr = &(syntax->ac_table[table_id]);
 
-            syntax->htbl_entry |= 1 << ((table_id * 2) + 1);
+            syntax->htbl_entry++;
 
             for (i = 0; i < num; i++) {
                 READ_BITS(gb, 8, &value);
@@ -338,9 +337,9 @@ static MPP_RET jpegd_decode_dqt(JpegdCtx *ctx)
         }
 
         READ_BITS(gb, 4, &index);
-        if (index >= QUANTIZE_TABLE_ID_BUTT) {
+        if (index >= 4) {
             mpp_err_f("dqt: invalid quantize tables ID\n");
-            return MPP_ERR_STREAM;
+            return -1;
         }
         jpegd_dbg_marker("quantize tables ID=%d\n", index);
 
@@ -758,7 +757,6 @@ static MPP_RET jpegd_decode_frame(JpegdCtx *ctx)
         start_code = jpegd_find_marker(&buf_ptr, buf_end);
         if (start_code <= 0) {
             jpegd_dbg_marker("start code not found\n");
-            ret = MPP_ERR_STREAM;
             break;
         } else {
             buf_ptr += 2;
@@ -777,18 +775,11 @@ static MPP_RET jpegd_decode_frame(JpegdCtx *ctx)
             jpegd_dbg_syntax("restart marker: %d\n", start_code & 0x0f);
         }
 
-        if (start_code > SOF0 && start_code <= SOF15 && start_code != DHT) {
-            mpp_err_f("Only baseline DCT is supported, unsupported entropy encoding 0x%x", start_code);
-            ret = MPP_ERR_STREAM;
-            goto fail;
-        }
-
         switch (start_code) {
         case SOI:
             /* nothing to do on SOI */
             syntax->dht_found = 0;
             syntax->eoi_found = 0;
-            syntax->sof0_found = 0;
             syntax->qtable_cnt = 0;
             syntax->qtbl_entry = 0;
             syntax->htbl_entry = 0;
@@ -816,8 +807,6 @@ static MPP_RET jpegd_decode_frame(JpegdCtx *ctx)
                     For baseline, it should be 8\n", ctx->syntax->sample_precision);
                 goto fail;
             }
-
-            syntax->sof0_found = 1;
             break;
         case EOI:
             syntax->eoi_found = 1;
@@ -826,11 +815,6 @@ static MPP_RET jpegd_decode_frame(JpegdCtx *ctx)
             goto done;
             break;
         case SOS:
-            if (!syntax->sof0_found) {
-                mpp_err_f("Warning: only support baseline type\n");
-                goto fail;
-            }
-
             if ((ret = jpegd_decode_sos(ctx)) != MPP_OK) {
                 mpp_err_f("sos decode error\n");
                 goto fail;
@@ -890,7 +874,9 @@ done:
     if (!syntax->dht_found) {
         jpegd_dbg_marker("sorry, DHT is not found!\n");
         jpegd_setup_default_dht(ctx);
-        syntax->htbl_entry = 0x0f;
+        syntax->htbl_entry = syntax->nb_components;
+    } else {
+        syntax->htbl_entry /= 2;
     }
     if (!syntax->eoi_found) {
         if (MPP_OK != jpegd_find_eoi(&buf_ptr, buf_end)) {
@@ -1136,8 +1122,7 @@ static MPP_RET jpegd_parse(void *ctx, HalDecTask *task)
         task->valid = 1;
 
         jpegd_update_frame(JpegCtx);
-    } else
-        task->flags.parse_err = 1;
+    }
 
     jpegd_dbg_func("exit\n");
     return ret;
@@ -1186,11 +1171,8 @@ static MPP_RET jpegd_deinit(void *ctx)
 
 static MPP_RET jpegd_init(void *ctx, ParserCfg *parser_cfg)
 {
-    JpegdCtx *JpegCtx = (JpegdCtx *)ctx;
-    const MppDecHwCap *hw_info = parser_cfg->hw_info;
-
     jpegd_dbg_func("enter\n");
-
+    JpegdCtx *JpegCtx = (JpegdCtx *)ctx;
     if (NULL == JpegCtx) {
         JpegCtx = (JpegdCtx *)mpp_calloc(JpegdCtx, 1);
         if (NULL == JpegCtx) {
@@ -1198,12 +1180,13 @@ static MPP_RET jpegd_init(void *ctx, ParserCfg *parser_cfg)
             return MPP_ERR_NULL_PTR;
         }
     }
-
     mpp_env_get_u32("jpegd_debug", &jpegd_debug, 0);
     // mpp only support baseline
     JpegCtx->scan_all_marker = 0;
 
-    if (hw_info && hw_info->cap_hw_jpg_fix) {
+    const char* soc_name = NULL;
+    soc_name = mpp_get_soc_name();
+    if (soc_name && (strstr(soc_name, "1108") || strstr(soc_name, "356"))) {
         /*
          * no need to copy stream when decoding jpeg;
          * just scan parts of markers to reduce CPU's occupancy
@@ -1302,32 +1285,12 @@ static MPP_RET jpegd_control(void *ctx, MpiCmd cmd, void *param)
     return ret;
 }
 
-static MPP_RET jpegd_callback(void *decoder, void *err_info)
+static MPP_RET jpegd_callback(void *ctx, void *err_info)
 {
-    JpegdCtx *JpegCtx = (JpegdCtx *)decoder;
-    DecCbHalDone *ctx = (DecCbHalDone *)err_info;
-    HalDecTask *task_dec = (HalDecTask *)ctx->task;
-    RK_U32 task_err = task_dec->flags.parse_err;
-    RK_U32 hw_dec_err = ctx->hard_err;
-    RK_S32 output = task_dec->output;
-    RK_U32 err_mark = 0;
-    MppFrame frame = NULL;
-
-    if (output >= 0)
-        mpp_buf_slot_get_prop(JpegCtx->frame_slots, output, SLOT_FRAME_PTR, &frame);
-
-    if (!frame)
-        goto __RETURN;
-
-    /* check and mark current frame */
-    if (task_err)
-        err_mark |= MPP_FRAME_ERR_DEC_INVALID;
-    else if (hw_dec_err)
-        err_mark |= MPP_FRAME_ERR_DEC_HW_ERR;
-    if (err_mark)
-        mpp_frame_set_errinfo(frame, err_mark);
-
-__RETURN:
+    jpegd_dbg_func("enter\n");
+    (void) ctx;
+    (void) err_info;
+    jpegd_dbg_func("exit\n");
     return MPP_OK;
 }
 

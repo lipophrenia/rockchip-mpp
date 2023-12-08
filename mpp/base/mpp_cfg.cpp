@@ -166,9 +166,13 @@ static MPP_RET mpp_cfg_set_ptr(MppCfgInfoNode *info, void *cfg, void *val)
 {
     void **dst = CFG_TO_PTR_PTR(info, cfg);
 
-    mpp_cfg_dbg_set("set ptr %-25s update %p -> %p\n", info->name, dst[0], val);
-    dst[0] = val;
-    CFG_TO_FLAG_PTR(info, cfg)[0] |= info->flag_value;
+    if (dst[0] != val) {
+        mpp_cfg_dbg_set("set ptr %-25s update %p -> %p\n", info->name, dst[0], val);
+        dst[0] = val;
+        CFG_TO_FLAG_PTR(info, cfg)[0] |= info->flag_value;
+    } else {
+        mpp_cfg_dbg_set("set ptr %-25s keep   %p\n", info->name, dst[0]);
+    }
 
     return MPP_OK;
 }

@@ -67,9 +67,6 @@ public:
     RK_S32 perform(PerformCmd cmd, RK_S32 *data);
     RK_S32 control(VpuCodecContext *ctx, VPU_API_CMD cmd, void *param);
 
-public:
-    FrameRdyCB frm_rdy_cb;
-
 private:
     VPU_GENERIC vpug;
     MppCtx mpp_ctx;
@@ -81,8 +78,6 @@ private:
     /* encoder parameters */
     MppBufferGroup memGroup;
     MppFrameFormat format;
-
-    RK_U32 mInputTimeOutMs;
 
     RK_S32 fd_input;
     RK_S32 fd_output;
@@ -98,8 +93,6 @@ private:
     /* for mlvec */
     VpuApiMlvec mlvec;
     VpuApiMlvecDynamicCfg mlvec_dy_cfg;
-
-    RK_S32 dec_out_frm_struct_type;
 };
 
 #endif /*__VPU_API_LEGACY_H__*/

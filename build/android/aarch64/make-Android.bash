@@ -2,19 +2,12 @@
 
 BUILD_TYPE="Release"
 ANDROID_ABI="arm64-v8a"
-ANDROID_STL="system"
 
 #Specify Android NDK path if needed
 #ANDROID_NDK=
 
 #Specify cmake if needed
 #CMAKE_PROGRAM=
-
-for ARG in "$@"; do
-  if [[ "$ARG" == "-c" ]]; then
-    clear
-  fi
-done
 
 source ../env_setup.sh
 
@@ -27,7 +20,7 @@ ${CMAKE_PROGRAM} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}                   \
       -DANDROID_ABI=${ANDROID_ABI}                                          \
       -DANDROID_TOOLCHAIN_NAME=${TOOLCHAIN_NAME}                            \
       -DANDROID_NATIVE_API_LEVEL=${NATIVE_API_LEVEL}                        \
-      -DANDROID_STL=${ANDROID_STL}                                          \
+      -DANDROID_STL=system                                                  \
       -DMPP_PROJECT_NAME=mpp                                                \
       -DVPU_PROJECT_NAME=vpu                                                \
       -DHAVE_DRM=ON                                                         \

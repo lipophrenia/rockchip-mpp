@@ -591,7 +591,6 @@ static MPP_RET parse_picture_header_intra(Avs2dCtx_t *p_dec)
     BitReadCtx_t *bitctx  = &p_dec->bitctx;
     Avs2dSeqHeader_t *vsh = &p_dec->vsh;
     Avs2dPicHeader_t *ph  = &p_dec->ph;
-    RK_U32 last_pic_out_delay = ph->picture_output_delay;
 
     AVS2D_PARSE_TRACE("In.");
     memset(ph, 0, sizeof(Avs2dPicHeader_t));
@@ -628,7 +627,7 @@ static MPP_RET parse_picture_header_intra(Avs2dCtx_t *p_dec)
         AVS2D_PARSE_TRACE("temporal_id %d\n", ph->temporal_id);
     }
 
-    if (vsh->low_delay == 0 && !(ph->background_picture_flag && !ph->background_picture_output_flag)) {
+    if (vsh->low_delay == 0 && (!ph->background_picture_flag || ph->background_picture_output_flag)) {
         READ_UE(bitctx, &ph->picture_output_delay);
         AVS2D_PARSE_TRACE("picture_output_delay %d\n", ph->picture_output_delay);
         if (ph->picture_output_delay >= 64) {
@@ -637,7 +636,7 @@ static MPP_RET parse_picture_header_intra(Avs2dCtx_t *p_dec)
             goto __FAILED;
         }
     } else {
-        ph->picture_output_delay = last_pic_out_delay;
+        ph->picture_output_delay = 0;
     }
 
     READ_ONEBIT(bitctx, &predict);
@@ -650,7 +649,6 @@ static MPP_RET parse_picture_header_intra(Avs2dCtx_t *p_dec)
     } else {
         FUN_CHECK(ret = parse_one_rps(bitctx, &p_dec->frm_mgr.cur_rps));
     }
-    AVS2D_PARSE_TRACE("num_of_remove %d", p_dec->frm_mgr.cur_rps.num_to_remove);
 
     if (vsh->low_delay) {
         READ_UE(bitctx, &ph->bbv_check_times);
@@ -739,7 +737,6 @@ static MPP_RET parse_picture_header_inter(Avs2dCtx_t *p_dec)
 
     if (vsh->low_delay == 0) {
         READ_UE(bitctx, &ph->picture_output_delay);
-        AVS2D_PARSE_TRACE("picture_output_delay %d\n", ph->picture_output_delay);
         if (ph->picture_output_delay >= 64) {
             ret = MPP_NOK;
             mpp_err_f("invalid picture output delay(%d) intra.\n", ph->picture_output_delay);
@@ -750,7 +747,6 @@ static MPP_RET parse_picture_header_inter(Avs2dCtx_t *p_dec)
     }
 
     READ_ONEBIT(bitctx, &predict);
-    AVS2D_PARSE_TRACE("predict %d\n", predict);
     if (predict) {
         RK_U8 rcs_index = 0;
         READ_BITS(bitctx, 5, &rcs_index);
@@ -758,7 +754,6 @@ static MPP_RET parse_picture_header_inter(Avs2dCtx_t *p_dec)
     } else {
         FUN_CHECK(ret = parse_one_rps(bitctx, &p_dec->frm_mgr.cur_rps));
     }
-    AVS2D_PARSE_TRACE("num_of_remove %d", p_dec->frm_mgr.cur_rps.num_to_remove);
 
     if (vsh->low_delay) {
         READ_UE(bitctx, &ph->bbv_check_times);

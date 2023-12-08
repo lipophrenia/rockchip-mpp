@@ -1,4 +1,5 @@
 # directory setting
+--recursive
 --exclude=../build
 --exclude=../osal/windows/pthread
 --exclude=../osal/linux/drm.h

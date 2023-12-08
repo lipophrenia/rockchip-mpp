@@ -272,9 +272,8 @@ static RK_S32 check_sysfs_iommu()
 }
 
 typedef struct {
-    size_t              alignment;
-    RK_S32              ion_device;
-    MppAllocFlagType    flags;
+    RK_U32  alignment;
+    RK_S32  ion_device;
 } allocator_ctx_ion;
 
 static const char *dev_ion = "/dev/ion";
@@ -282,7 +281,7 @@ static RK_S32 ion_heap_id = -1;
 static RK_U32 ion_heap_mask = (1 << ION_HEAP_TYPE_SYSTEM);
 static pthread_mutex_t lock;
 
-static MPP_RET allocator_ion_open(void **ctx, size_t alignment, MppAllocFlagType flags)
+static MPP_RET allocator_ion_open(void **ctx, MppAllocatorCfg *cfg)
 {
     RK_S32 fd;
     allocator_ctx_ion *p;
@@ -344,8 +343,7 @@ static MPP_RET allocator_ion_open(void **ctx, size_t alignment, MppAllocFlagType
             mpp_log("using ion heap %s\n", heap_name);
         }
         pthread_mutex_unlock(&lock);
-        p->alignment    = alignment;
-        p->flags        = flags;
+        p->alignment    = cfg->alignment;
         p->ion_device   = fd;
         *ctx = p;
     }
@@ -483,15 +481,7 @@ static MPP_RET allocator_ion_close(void *ctx)
     return ret;
 }
 
-static MppAllocFlagType os_allocator_ion_flags(void *ctx)
-{
-    allocator_ctx_ion *p = (allocator_ctx_ion *)ctx;
-
-    return p ? p->flags : MPP_ALLOC_FLAG_NONE;
-}
-
 os_allocator allocator_ion = {
-    .type = MPP_BUFFER_TYPE_ION,
     .open = allocator_ion_open,
     .close = allocator_ion_close,
     .alloc = allocator_ion_alloc,
@@ -499,5 +489,5 @@ os_allocator allocator_ion = {
     .import = allocator_ion_import,
     .release = allocator_ion_free,
     .mmap = allocator_ion_mmap,
-    .flags = os_allocator_ion_flags,
 };
+

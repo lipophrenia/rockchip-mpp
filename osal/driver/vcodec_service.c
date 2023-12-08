@@ -335,7 +335,6 @@ const char *mpp_get_vcodec_dev_name(MppCtxType type, MppCodingType coding)
             dev = mpp_find_device(mpp_vpu_dev);
     } break;
     case ROCKCHIP_SOC_RK3566 :
-    case ROCKCHIP_SOC_RK3567 :
     case ROCKCHIP_SOC_RK3568 : {
         /*
          * rk3566/rk3568 has codec:
@@ -711,7 +710,6 @@ const MppDevApi vcodec_service_api = {
     NULL,
     NULL,
     vcodec_service_set_info,
-    NULL,
     vcodec_service_cmd_send,
     vcodec_service_cmd_poll,
 };

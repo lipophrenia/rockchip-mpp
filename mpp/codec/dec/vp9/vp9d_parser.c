@@ -24,7 +24,6 @@
 #include "mpp_common.h"
 #include "mpp_bitread.h"
 #include "mpp_packet_impl.h"
-#include "mpp_compat_impl.h"
 
 #include "vp9data.h"
 #include "vp9d_codec.h"
@@ -364,7 +363,6 @@ MPP_RET vp9d_parser_init(Vp9CodecContext *vp9_ctx, ParserCfg *init)
     s->packet_slots = init->packet_slots;
     s->slots = init->frame_slots;
     s->cfg = init->cfg;
-    s->hw_info = init->hw_info;
     mpp_buf_slot_setup(s->slots, 25);
 
     mpp_env_get_u32("vp9d_debug", &vp9d_debug, 0);
@@ -380,6 +378,11 @@ MPP_RET vp9d_parser_deinit(Vp9CodecContext *vp9_ctx)
     s->c_b_size = 0;
     MPP_FREE(vp9_ctx->priv_data);
     return MPP_OK;
+}
+
+static RK_U32 hor_align_64(RK_U32 val)
+{
+    return MPP_ALIGN(val, 64);
 }
 
 static RK_S32 vp9_alloc_frame(Vp9CodecContext *ctx, VP9Frame *frame)
@@ -398,25 +401,11 @@ static RK_S32 vp9_alloc_frame(Vp9CodecContext *ctx, VP9Frame *frame)
     mpp_frame_set_poc(frame->f, s->cur_poc);
 
     if (MPP_FRAME_FMT_IS_FBC(s->cfg->base.out_fmt)) {
-        RK_U32 fbc_hdr_stride = mpp_align_64(ctx->width);
-
-        mpp_slots_set_prop(s->slots, SLOTS_HOR_ALIGN, mpp_align_64);
+        mpp_slots_set_prop(s->slots, SLOTS_HOR_ALIGN, hor_align_64);
         mpp_frame_set_fmt(frame->f, ctx->pix_fmt | ((s->cfg->base.out_fmt & (MPP_FRAME_FBC_MASK))));
-
-        if (*compat_ext_fbc_hdr_256_odd)
-            fbc_hdr_stride = mpp_align_256_odd(ctx->width);
-
-        mpp_frame_set_fbc_hdr_stride(frame->f, fbc_hdr_stride);
-    } else {
-        mpp_slots_set_prop(s->slots, SLOTS_HOR_ALIGN, mpp_align_256_odd);
-        mpp_slots_set_prop(s->slots, SLOTS_VER_ALIGN, mpp_align_64);
+        mpp_frame_set_fbc_hdr_stride(frame->f, MPP_ALIGN(ctx->width, 64));
+    } else
         mpp_frame_set_fmt(frame->f, ctx->pix_fmt);
-    }
-
-    if (s->cfg->base.enable_thumbnail && s->hw_info->cap_down_scale)
-        mpp_frame_set_thumbnail_en(frame->f, 1);
-    else
-        mpp_frame_set_thumbnail_en(frame->f, 0);
 
     mpp_buf_slot_get_unused(s->slots, &frame->slot_index);
     mpp_buf_slot_set_prop(s->slots, frame->slot_index, SLOT_FRAME, frame->f);
@@ -1707,13 +1696,12 @@ RK_S32 vp9_parser_frame(Vp9CodecContext *ctx, HalDecTask *task)
             mpp_buf_slot_set_flag(s->slots, s->refs[s->refidx[i]].slot_index, SLOT_HAL_INPUT);
             task->refer[i] = s->refs[s->refidx[i]].slot_index;
             mpp_buf_slot_get_prop(s->slots, task->refer[i], SLOT_FRAME_PTR, &mframe);
-            if (mframe && !s->keyframe && !s->intraonly)
+            if (mframe)
                 task->flags.ref_err |= mpp_frame_get_errinfo(mframe);
         } else {
             task->refer[i] = -1;
         }
     }
-
     vp9d_dbg(VP9D_DBG_REF, "ref_errinfo=%d\n", task->flags.ref_err);
     if (s->eos) {
         task->flags.eos = 1;

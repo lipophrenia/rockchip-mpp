@@ -153,10 +153,6 @@ typedef struct RcCfg_s {
     RK_S32      min_i_quality;
     RK_S32      i_quality_delta;
     RK_S32      vi_quality_delta;
-    RK_S32      fqp_min_i;
-    RK_S32      fqp_min_p;
-    RK_S32      fqp_max_i;
-    RK_S32      fqp_max_p;
     /* layer quality proportion */
     RK_S32      layer_quality_delta[4];
 
@@ -183,9 +179,6 @@ typedef struct RcCfg_s {
     RcSuperframeCfg super_cfg;
     RcDebreathCfg   debreath_cfg;
     RcHierQPCfg     hier_qp_cfg;
-    RK_U32          refresh_len;
-    RK_S32          scene_mode;
-    RK_U32          fps_chg_prop;
 } RcCfg;
 
 /*

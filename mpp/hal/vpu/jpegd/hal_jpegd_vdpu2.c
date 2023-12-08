@@ -30,7 +30,6 @@
 #include "hal_jpegd_common.h"
 #include "hal_jpegd_vdpu2.h"
 #include "hal_jpegd_vdpu2_reg.h"
-#include "mpp_dec_cb_param.h"
 
 extern RK_U32 jpegd_debug;
 
@@ -694,10 +693,7 @@ MPP_RET jpegd_gen_regs(JpegdHalCtx *ctx, JpegdSyntax *syntax)
 
     /* write table base */
     reg->reg61_qtable_base = mpp_buffer_get_fd(ctx->pTableBase);
-    if (reg->reg61_qtable_base <= 0) {
-        mpp_err_f("get qtable_base failed\n");
-        return MPP_NOK;
-    }
+
     /* set up stream position for HW decode */
     jpegd_set_stream_offset(ctx, s);
 
@@ -726,7 +722,6 @@ MPP_RET hal_jpegd_vdpu2_init(void *hal, MppHalCfg *cfg)
     jpegd_dbg_func("enter\n");
 
     //configure
-    JpegHalCtx->dec_cb       = cfg->dec_cb;
     JpegHalCtx->packet_slots = cfg->packet_slots;
     JpegHalCtx->frame_slots  = cfg->frame_slots;
     JpegHalCtx->dev_type     = VPU_CLIENT_VDPU2;
@@ -854,9 +849,6 @@ MPP_RET hal_jpegd_vdpu2_gen_regs(void *hal,  HalTaskInfo *syn)
     MppBuffer streambuf = NULL;
     MppBuffer outputBuf = NULL;
 
-    if (syn->dec.flags.parse_err)
-        goto RET;
-
     ret = jpeg_image_check_size(syntax->hor_stride, syntax->ver_stride);
     if (ret)
         goto RET;
@@ -872,32 +864,23 @@ MPP_RET hal_jpegd_vdpu2_gen_regs(void *hal,  HalTaskInfo *syn)
         mpp_buf_slot_get_prop(JpegHalCtx->packet_slots, syn->dec.input,
                               SLOT_BUFFER, &streambuf);
         JpegHalCtx->pkt_fd = mpp_buffer_get_fd(streambuf);
-        if (JpegHalCtx->pkt_fd <= 0) {
-            mpp_err_f("get pkt_fd failed\n");
-            goto RET;
-        }
         syntax->pkt_len = jpegd_vdpu_tail_0xFF_patch(streambuf, syntax->pkt_len);
 
         /* output picture address */
         mpp_buf_slot_get_prop(JpegHalCtx->frame_slots, syn->dec.output,
                               SLOT_BUFFER, &outputBuf);
         JpegHalCtx->frame_fd = mpp_buffer_get_fd(outputBuf);
-        if (JpegHalCtx->frame_fd <= 0) {
-            mpp_err_f("get frame_fd failed\n");
-            goto RET;
-        }
 
         ret = jpegd_gen_regs(JpegHalCtx, syntax);
-        if (ret != MPP_OK) {
+        if (ret) {
             mpp_err_f("generate registers failed\n");
             goto RET;
         }
     }
 
-    return ret;
 RET:
-    syn->dec.valid = 0;
-    syn->dec.flags.parse_err = 1;
+    if (ret)
+        syn->dec.valid = 0;
 
     jpegd_dbg_func("exit\n");
     return ret;
@@ -910,8 +893,6 @@ MPP_RET hal_jpegd_vdpu2_start(void *hal, HalTaskInfo *task)
     RK_U32 *regs = (RK_U32 *)JpegHalCtx->regs;
 
     jpegd_dbg_func("enter\n");
-    if (task->dec.flags.parse_err)
-        goto __RETURN;
 
     do {
         MppDevRegWrCfg wr_cfg;
@@ -927,7 +908,7 @@ MPP_RET hal_jpegd_vdpu2_start(void *hal, HalTaskInfo *task)
         ret = mpp_dev_ioctl(JpegHalCtx->dev, MPP_DEV_REG_WR, &wr_cfg);
         if (ret) {
             mpp_err_f("set register write failed %d\n", ret);
-            goto __RETURN;
+            break;
         }
 
         reg_size = sizeof(((JpegdIocRegInfo *)0)->regs);
@@ -939,21 +920,17 @@ MPP_RET hal_jpegd_vdpu2_start(void *hal, HalTaskInfo *task)
         ret = mpp_dev_ioctl(JpegHalCtx->dev, MPP_DEV_REG_RD, &rd_cfg);
         if (ret) {
             mpp_err_f("set register read failed %d\n", ret);
-            goto __RETURN;
+            break;
         }
 
         ret = mpp_dev_ioctl(JpegHalCtx->dev, MPP_DEV_CMD_SEND, NULL);
         if (ret) {
             mpp_err_f("send cmd failed %d\n", ret);
-            goto __RETURN;
+            break;
         }
     } while (0);
 
-    jpegd_dbg_func("exit\n");
-    return ret;
-
-__RETURN:
-    task->dec.flags.parse_err = 1;
+    (void)task;
     jpegd_dbg_func("exit\n");
     return ret;
 }
@@ -964,38 +941,30 @@ MPP_RET hal_jpegd_vdpu2_wait(void *hal, HalTaskInfo *task)
     JpegdHalCtx *JpegHalCtx = (JpegdHalCtx *)hal;
     JpegRegSet *reg_out = JpegHalCtx->regs;
     RK_U32 errinfo = 1;
+    MppFrame tmp = NULL;
 
     jpegd_dbg_func("enter\n");
-    if (task->dec.flags.parse_err)
-        goto __SKIP_HARD;
 
     ret = mpp_dev_ioctl(JpegHalCtx->dev, MPP_DEV_CMD_POLL, NULL);
-    if (ret) {
-        task->dec.flags.parse_err = 1;
+    if (ret)
         mpp_err_f("poll cmd failed %d\n", ret);
+
+    if (reg_out->reg55_Interrupt.sw_dec_bus_int) {
+        mpp_err_f("IRQ BUS ERROR!");
+    } else if (reg_out->reg55_Interrupt.sw_dec_error_int) {
+        mpp_err_f("IRQ STREAM ERROR!");
+    } else if (reg_out->reg55_Interrupt.sw_dec_timeout) {
+        mpp_err_f("IRQ TIMEOUT!");
+    } else if (reg_out->reg55_Interrupt.sw_dec_buffer_int) {
+        mpp_err_f("IRQ BUFFER EMPTY!");
+    } else if (reg_out->reg55_Interrupt.sw_dec_irq) {
+        errinfo = 0;
+        jpegd_dbg_result("DECODE SUCCESS!");
     }
 
-__SKIP_HARD:
-    if (JpegHalCtx->dec_cb) {
-        DecCbHalDone param;
-
-        param.task = (void *)&task->dec;
-        param.regs = (RK_U32 *)reg_out;
-        if (reg_out->reg55_Interrupt.sw_dec_bus_int) {
-            mpp_err_f("IRQ BUS ERROR!");
-        } else if (reg_out->reg55_Interrupt.sw_dec_error_int) {
-            mpp_err_f("IRQ STREAM ERROR!");
-        } else if (reg_out->reg55_Interrupt.sw_dec_timeout) {
-            mpp_err_f("IRQ TIMEOUT!");
-        } else if (reg_out->reg55_Interrupt.sw_dec_buffer_int) {
-            mpp_err_f("IRQ BUFFER EMPTY!");
-        } else if (reg_out->reg55_Interrupt.sw_dec_irq) {
-            errinfo = 0;
-            jpegd_dbg_result("DECODE SUCCESS!");
-        }
-        param.hard_err = errinfo;
-        mpp_callback(JpegHalCtx->dec_cb, &param);
-    }
+    mpp_buf_slot_get_prop(JpegHalCtx->frame_slots, task->dec.output,
+                          SLOT_FRAME_PTR, &tmp);
+    mpp_frame_set_errinfo(tmp, errinfo);
 
     /* debug information */
     if (jpegd_debug & JPEGD_DBG_IO) {
@@ -1026,6 +995,7 @@ __SKIP_HARD:
 
     memset(&reg_out->reg55_Interrupt, 0, sizeof(RK_U32));
 
+    (void)task;
     jpegd_dbg_func("exit\n");
     return ret;
 }
@@ -1065,10 +1035,10 @@ MPP_RET hal_jpegd_vdpu2_control(void *hal, MpiCmd cmd_type,
     case MPP_DEC_SET_OUTPUT_FORMAT: {
         JpegHalCtx->output_fmt = *((MppFrameFormat *)param);
         JpegHalCtx->set_output_fmt_flag = 1;
-        jpegd_dbg_hal("output_format: 0x%x\n", JpegHalCtx->output_fmt);
+        jpegd_dbg_hal("output_format:%d\n", JpegHalCtx->output_fmt);
 
         if (!MPP_FRAME_FMT_IS_YUV(JpegHalCtx->output_fmt) && !MPP_FRAME_FMT_IS_RGB(JpegHalCtx->output_fmt)) {
-            mpp_err_f("invalid output format 0x%x\n", JpegHalCtx->output_fmt);
+            mpp_err_f("output format %d is invalid.\n", JpegHalCtx->output_fmt);
             ret = MPP_ERR_VALUE;
         }
     } break;

@@ -20,7 +20,6 @@
 
 #include "mpp_env.h"
 #include "mpp_debug.h"
-#include "mpp_common.h"
 #include "osal_2str.h"
 
 #include "mpp_hal.h"
@@ -107,10 +106,6 @@ static MPP_RET hal_jpegd_init(void *hal, MppHalCfg *cfg)
             client_type = VPU_CLIENT_VDPU2;
         if (hw_flag & HAVE_VDPU1)
             client_type = VPU_CLIENT_VDPU1;
-        if (hw_flag & HAVE_VDPU2_PP)
-            client_type = VPU_CLIENT_VDPU2_PP;
-        if (hw_flag & HAVE_VDPU1_PP)
-            client_type = VPU_CLIENT_VDPU1_PP;
         if (hw_flag & HAVE_JPEG_DEC)
             client_type = VPU_CLIENT_JPEG_DEC;
     }
@@ -153,19 +148,6 @@ static MPP_RET hal_jpegd_init(void *hal, MppHalCfg *cfg)
     default : {
         return MPP_ERR_INIT;
     } break;
-    }
-
-    {
-        // report hw_info to parser
-        const MppSocInfo *info = mpp_get_soc_info();
-        RK_U32 i;
-
-        for (i = 0; i < MPP_ARRAY_ELEMS(info->dec_caps); i++) {
-            if (info->dec_caps[i] && info->dec_caps[i]->type == client_type) {
-                cfg->hw_info = info->dec_caps[i];
-                break;
-            }
-        }
     }
 
     return p_api->init(hal, cfg);

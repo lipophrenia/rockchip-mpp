@@ -35,8 +35,8 @@ static int av1d_fill_picparams(Av1CodecContext *ctx, DXVA_PicParams_AV1 *pp)
 
     memset(pp, 0, sizeof(*pp));
 
-    pp->width  = h->frame_width;
-    pp->height = h->frame_height;
+    pp->width  = ctx->width;
+    pp->height = ctx->height;
 
     pp->max_width  = seq->max_frame_width_minus_1 + 1;
     pp->max_height = seq->max_frame_height_minus_1 + 1;
@@ -120,11 +120,8 @@ static int av1d_fill_picparams(Av1CodecContext *ctx, DXVA_PicParams_AV1 *pp)
         int8_t ref_idx = frame_header->ref_frame_idx[i];
         AV1Frame *ref_frame = &h->ref[ref_idx];
         RefInfo *ref_i = ref_frame->ref;
-
-        if (ref_frame->f) {
-            pp->frame_refs[i].width  = mpp_frame_get_width(ref_frame->f);
-            pp->frame_refs[i].height = mpp_frame_get_height(ref_frame->f);;
-        }
+        pp->frame_refs[i].width  = mpp_frame_get_width(ref_frame->f);
+        pp->frame_refs[i].height = mpp_frame_get_height(ref_frame->f);;
         pp->frame_refs[i].Index  = ref_frame->slot_index;
         pp->frame_refs[i].order_hint = ref_frame->order_hint;
         if (ref_i) {
@@ -139,15 +136,11 @@ static int av1d_fill_picparams(Av1CodecContext *ctx, DXVA_PicParams_AV1 *pp)
             pp->frame_refs[i].intra_only = ref_i->intra_only;
         }
         /* Global Motion */
-        pp->frame_refs[i].wminvalid = (h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].wmtype == AV1_WARP_MODEL_IDENTITY);
-        pp->frame_refs[i].wmtype    = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].wmtype;
+        pp->frame_refs[i].wminvalid = (h->cur_frame.gm_type[AV1_REF_FRAME_LAST + i] == AV1_WARP_MODEL_IDENTITY);
+        pp->frame_refs[i].wmtype    = h->cur_frame.gm_type[AV1_REF_FRAME_LAST + i];
         for (j = 0; j < 6; ++j) {
-            pp->frame_refs[i].wmmat[j] = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].wmmat[j];
+            pp->frame_refs[i].wmmat[j] = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i][j];
         }
-        pp->frame_refs[i].alpha = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].alpha;
-        pp->frame_refs[i].beta = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].beta;
-        pp->frame_refs[i].gamma = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].gamma;
-        pp->frame_refs[i].delta = h->cur_frame.gm_params[AV1_REF_FRAME_LAST + i].delta;
     }
     for (i = 0; i < AV1_NUM_REF_FRAMES; i++) {
         AV1Frame *ref_frame = &h->ref[i];

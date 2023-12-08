@@ -46,7 +46,6 @@ MPP_RET avs2d_deinit(void *decoder)
     MPP_FREE(p_dec->p_stream->pbuf);
     MPP_FREE(p_dec->p_header->pbuf);
     MPP_FREE(p_dec->mem);
-    MPP_FREE(p_dec->p_nals);
     mpp_packet_deinit(&p_dec->task_pkt);
     avs2d_dpb_destroy(p_dec);
 
@@ -77,22 +76,19 @@ MPP_RET avs2d_init(void *decoder, ParserCfg *init)
     MEM_CHECK(ret, p_dec->mem);
     p_dec->p_header = &p_dec->mem->headerbuf;
     p_dec->p_header->size = MAX_HEADER_SIZE;
-    p_dec->p_header->pbuf = mpp_calloc(RK_U8, p_dec->p_header->size);
+    p_dec->p_header->pbuf = mpp_malloc(RK_U8, p_dec->p_header->size);
     MEM_CHECK(ret, p_dec->p_header->pbuf);
 
     p_dec->p_stream = &p_dec->mem->streambuf;
     p_dec->p_stream->size = MAX_STREAM_SIZE;
-    p_dec->p_stream->pbuf = mpp_calloc(RK_U8, p_dec->p_stream->size);
+    p_dec->p_stream->pbuf = mpp_malloc(RK_U8, p_dec->p_stream->size);
     MEM_CHECK(ret, p_dec->p_stream->pbuf);
-
-    p_dec->p_nals = mpp_calloc(Avs2dNalu_t, MAX_NALU_NUM);
-    MEM_CHECK(ret, p_dec->p_nals);
-    p_dec->nal_allocated = MAX_NALU_NUM;
-    p_dec->nal_cnt = 0;
 
     mpp_packet_init(&p_dec->task_pkt, p_dec->p_stream->pbuf, p_dec->p_stream->size);
     mpp_packet_set_length(p_dec->task_pkt, 0);
     MEM_CHECK(ret, p_dec->task_pkt);
+
+    // avs2d_dpb_create(p_dec);
 
 __RETURN:
     AVS2D_PARSE_TRACE("Out.");
@@ -120,6 +116,7 @@ MPP_RET avs2d_reset(void *decoder)
     p_dec->pkt_no      = 0;
     p_dec->frame_no    = 0;
     p_dec->has_get_eos = 0;
+    p_dec->nal         = NULL;
 
     AVS2D_PARSE_TRACE("Out.");
     return ret;
@@ -154,6 +151,7 @@ MPP_RET avs2d_prepare(void *decoder, MppPacket pkt, HalDecTask *task)
 {
     MPP_RET ret = MPP_OK;
     Avs2dCtx_t *p_dec = (Avs2dCtx_t *)decoder;
+    RK_U8 *buf = NULL;
     RK_S64 pts = -1;
     RK_S64 dts = -1;
     RK_U32 length = 0;
@@ -166,6 +164,7 @@ MPP_RET avs2d_prepare(void *decoder, MppPacket pkt, HalDecTask *task)
 
     pkt_eos = mpp_packet_get_eos(pkt);
 
+    buf = (RK_U8 *)mpp_packet_get_pos(pkt);
     pts = mpp_packet_get_pts(pkt);
     dts = mpp_packet_get_dts(pkt);
     length = (RK_U32)mpp_packet_get_length(pkt);
@@ -174,21 +173,17 @@ MPP_RET avs2d_prepare(void *decoder, MppPacket pkt, HalDecTask *task)
               pts, dts, length, pkt_eos, p_dec->pkt_no);
     p_dec->pkt_no++;
 
-    AVS2D_DBG(AVS2D_DBG_INPUT, "packet length %d, eos %d\n", length, pkt_eos);
+    AVS2D_DBG(AVS2D_DBG_INPUT, "packet length %d, eos %d, buf[0-3]=%02x %02x %02x %02x\n",
+              length, p_dec->has_get_eos, buf[0], buf[1], buf[2], buf[3]);
 
     if (pkt_eos) {
         p_dec->has_get_eos = 1;
-        task->flags.eos = 1;
-    }
-
-    if (!length) {
-        AVS2D_PARSE_TRACE("Input have no stream.");
-        task->valid = 0;
-
-        if (pkt_eos)
+        if (length <= 4) {
+            // skip parsing video_sequence_end_code if it exists
+            task->flags.eos = 1;
             avs2d_dpb_flush(p_dec);
-
-        goto __RETURN;
+            goto __RETURN;
+        }
     }
 
     if (!p_dec->init.cfg->base.split_parse) {
@@ -207,6 +202,7 @@ MPP_RET avs2d_prepare(void *decoder, MppPacket pkt, HalDecTask *task)
 
         p_dec->syntax.bitstream_size = align_len;
         p_dec->syntax.bitstream = p_dec->p_stream->pbuf;
+        // TODO if bistream_size is larger than p_stream->size, realloc
 
         mpp_packet_set_data(p_dec->task_pkt, p_dec->syntax.bitstream);
         mpp_packet_set_length(p_dec->task_pkt, p_dec->syntax.bitstream_size);
@@ -235,10 +231,7 @@ MPP_RET avs2d_parse(void *decoder, HalDecTask *task)
 
     task->valid = 0;
 
-    ret = avs2d_parse_stream(p_dec, task);
-    if (ret) {
-        mpp_err_f("Parse stream failed!");
-    }
+    avs2d_parse_stream(p_dec, task);
     if (task->valid) {
         AVS2D_PARSE_TRACE("-------- Frame %lld--------", p_dec->frame_no);
         avs2d_dpb_insert(p_dec, task);
@@ -248,9 +241,6 @@ MPP_RET avs2d_parse(void *decoder, HalDecTask *task)
     } else {
         task->flags.parse_err = 1;
     }
-
-    if (p_dec->has_get_eos)
-        avs2d_dpb_flush(p_dec);
 
     AVS2D_PARSE_TRACE("Out.");
 

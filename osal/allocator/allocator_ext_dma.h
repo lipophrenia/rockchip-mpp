@@ -17,7 +17,7 @@
 #ifndef __ALLOCATOR_EXT_DMA_H__
 #define __ALLOCATOR_EXT_DMA_H__
 
-#include "mpp_allocator_api.h"
+#include "os_allocator.h"
 
 extern os_allocator allocator_ext_dma;
 

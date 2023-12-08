@@ -138,10 +138,6 @@ typedef struct Vdpu382RegAvs2dAddr_t {
 
     /* SWREG197 */
     RK_U32  cabactbl_base;
-
-    RK_U32  scale_down_luma_base;
-
-    RK_U32  scale_down_chorme_base;
 } Vdpu382RegAvs2dAddr;
 
 typedef struct Vdpu382Avs2dRegSet_t {
