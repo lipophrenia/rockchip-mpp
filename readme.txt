@@ -1,4 +1,10 @@
-ORIGINAL REPO - https://github.com/rockchip-linux/mpp
+Build for arm64:
+1. git clone & cd source dir
+2. cd build/linux/aarch64
+3. sudo ./make-Makefiles.bash
+4. sudo make -j4
+5. sudo make -j4 install
+
 
 Media Process Platform (MPP) module directory description:
 
