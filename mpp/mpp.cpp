@@ -60,15 +60,19 @@ static void *list_wraper_frame(void *arg)
     return NULL;
 }
 
-static MPP_RET check_frm_task_cnt_cap(MppCodingType coding)
+static RK_S32 check_frm_task_cnt_cap(MppCodingType coding)
 {
-    if (coding != MPP_VIDEO_CodingAVC ||
-        !strstr(mpp_get_soc_name(), "rk3588")) {
-        mpp_log("Only rk3588 h264 encoder can use frame parallel\n");
-        return MPP_NOK;
+    if (strstr(mpp_get_soc_name(), "rk3588")) {
+        if (coding == MPP_VIDEO_CodingAVC)
+            return 2;
+
+        if (coding == MPP_VIDEO_CodingMJPEG)
+            return 4;
     }
 
-    return MPP_OK;
+    mpp_log("Only rk3588 h264/jpeg encoder can use frame parallel\n");
+
+    return 1;
 }
 
 Mpp::Mpp(MppCtx ctx)
@@ -189,6 +193,8 @@ MPP_RET Mpp::init(MppCtxType type, MppCodingType coding)
         mInitDone = 1;
     } break;
     case MPP_CTX_ENC : {
+        RK_S32 input_task_count = 1;
+
         mPktIn  = new mpp_list(list_wraper_packet);
         mPktOut = new mpp_list(list_wraper_packet);
         mFrmIn  = new mpp_list(NULL);
@@ -203,7 +209,15 @@ MPP_RET Mpp::init(MppCtxType type, MppCodingType coding)
         mpp_buffer_group_get_internal(&mPacketGroup, MPP_BUFFER_TYPE_ION);
         mpp_buffer_group_get_internal(&mFrameGroup, MPP_BUFFER_TYPE_ION);
 
-        mpp_task_queue_setup(mInputTaskQueue, 1);
+        if (mInputTimeout == MPP_POLL_NON_BLOCK) {
+            mEncAyncIo = 1;
+
+            input_task_count = check_frm_task_cnt_cap(coding);
+            if (input_task_count == 1)
+                mInputTimeout = MPP_POLL_BLOCK;
+        }
+
+        mpp_task_queue_setup(mInputTaskQueue, input_task_count);
         mpp_task_queue_setup(mOutputTaskQueue, 8);
 
         mUsrInPort  = mpp_task_queue_get_port(mInputTaskQueue,  MPP_PORT_INPUT);
@@ -211,15 +225,9 @@ MPP_RET Mpp::init(MppCtxType type, MppCodingType coding)
         mMppInPort  = mpp_task_queue_get_port(mInputTaskQueue,  MPP_PORT_OUTPUT);
         mMppOutPort = mpp_task_queue_get_port(mOutputTaskQueue, MPP_PORT_INPUT);
 
-        if (mInputTimeout == MPP_POLL_NON_BLOCK) {
-            mEncAyncIo = 1;
-            if (check_frm_task_cnt_cap(coding))
-                mInputTimeout = MPP_POLL_BLOCK;
-        }
-
         MppEncInitCfg cfg = {
             coding,
-            (mInputTimeout) ? (1) : (2),
+            input_task_count,
             this,
         };
 
@@ -532,36 +540,67 @@ MPP_RET Mpp::get_frame_noblock(MppFrame *frame)
 
 MPP_RET Mpp::decode(MppPacket packet, MppFrame *frame)
 {
-    RK_U32 packet_done = 0;
-    MPP_RET ret = MPP_NOK;
+    RK_U32 pkt_done = 0;
+    RK_S32 frm_rdy = 0;
+    MPP_RET ret = MPP_OK;
 
     if (!mDec)
         return MPP_NOK;
 
+    if (!mInitDone)
+        return MPP_ERR_INIT;
+
+    /*
+     * If there is frame to return get the frame first
+     * But if the output mode is block then we need to send packet first
+     */
+    if (!mOutputTimeout) {
+        AutoMutex autoFrameLock(mFrmOut->mutex());
+
+        if (mFrmOut->list_size()) {
+            mFrmOut->del_at_head(frame, sizeof(*frame));
+            mFrameGetCount++;
+            return MPP_OK;
+        }
+    }
+
     do {
-        /*
-         * If there is frame to return get the frame first
-         * But if the output mode is block then we need to send packet first
-         */
-        if (!mOutputTimeout || packet_done) {
-            ret = get_frame_noblock(frame);
-            if (ret || *frame)
-                break;
+        if (!pkt_done)
+            ret = mpp_dec_decode(mDec, packet);
+
+        /* check input packet finished or not */
+        if (!packet || !mpp_packet_get_length(packet))
+            pkt_done = 1;
+
+        /* always try getting frame */
+        {
+            AutoMutex autoFrameLock(mFrmOut->mutex());
+
+            if (mFrmOut->list_size()) {
+                mFrmOut->del_at_head(frame, sizeof(*frame));
+                mFrameGetCount++;
+                frm_rdy = 1;
+            }
         }
 
-        /* when packet is send do one more get frame here */
-        if (packet_done)
+        /* return on flow error */
+        if (ret < 0)
             break;
 
-        ret = mpp_dec_decode(mDec, packet, frame);
-        if (!ret)
-            packet_done = 1;
-
-        if (!mOutputTimeout || packet_done) {
-            ret = get_frame_noblock(frame);
-            if (ret || *frame)
-                break;
+        /* return on output frame is ready */
+        if (frm_rdy) {
+            mpp_assert(ret > 0);
+            ret = MPP_OK;
+            break;
         }
+
+        /* return when packet is send and it is a non-block call */
+        if (pkt_done) {
+            ret = MPP_OK;
+            break;
+        }
+
+        /* otherwise continue decoding and getting frame */
     } while (1);
 
     return ret;
@@ -1154,7 +1193,8 @@ MPP_RET Mpp::control_dec(MpiCmd cmd, MppParam param)
     case MPP_DEC_SET_IMMEDIATE_OUT :
     case MPP_DEC_SET_DISABLE_ERROR :
     case MPP_DEC_SET_ENABLE_DEINTERLACE :
-    case MPP_DEC_SET_ENABLE_FAST_PLAY : {
+    case MPP_DEC_SET_ENABLE_FAST_PLAY :
+    case MPP_DEC_SET_ENABLE_MVC: {
         /*
          * These control may be set before mpp_init
          * When this case happen record the config and wait for decoder init
@@ -1173,7 +1213,8 @@ MPP_RET Mpp::control_dec(MpiCmd cmd, MppParam param)
     } break;
     case MPP_DEC_GET_VPUMEM_USED_COUNT :
     case MPP_DEC_SET_OUTPUT_FORMAT :
-    case MPP_DEC_QUERY : {
+    case MPP_DEC_QUERY :
+    case MPP_DEC_SET_MAX_USE_BUFFER_SIZE: {
         ret = mpp_dec_control(mDec, cmd, param);
     } break;
     case MPP_DEC_SET_CFG : {

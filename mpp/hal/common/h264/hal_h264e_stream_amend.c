@@ -95,11 +95,15 @@ MPP_RET h264e_vepu_stream_amend_config(HalH264eVepuStreamAmend *ctx,
                                        H264eSlice *slice, H264ePrefixNal *prefix)
 {
     MppEncRefCfgImpl *ref = (MppEncRefCfgImpl *)cfg->ref_cfg;
+    MppEncH264Cfg    *h264 = &cfg->codec.h264;
+    MppEncH264HwCfg  *hw_cfg = &h264->hw_cfg;
 
     if (ref->lt_cfg_cnt || ref->st_cfg_cnt > 1 ||
-        cfg->codec.h264.hw_poc_type != cfg->codec.h264.poc_type) {
+        hw_cfg->hw_poc_type != h264->poc_type ||
+        hw_cfg->hw_log2_max_frame_num_minus4 != h264->log2_max_frame_num) {
         ctx->enable = 1;
         ctx->slice_enabled = 0;
+        ctx->diable_split_out = 1;
 
         if (NULL == ctx->dst_buf)
             ctx->dst_buf = mpp_calloc(RK_U8, ctx->buf_size);
@@ -125,13 +129,12 @@ MPP_RET h264e_vepu_stream_amend_config(HalH264eVepuStreamAmend *ctx,
     return MPP_OK;
 }
 
-MPP_RET h264e_vepu_stream_amend_proc(HalH264eVepuStreamAmend *ctx, RK_U32 poc_type)
+MPP_RET h264e_vepu_stream_amend_proc(HalH264eVepuStreamAmend *ctx, MppEncH264HwCfg *hw_cfg)
 {
     H264ePrefixNal *prefix = ctx->prefix;
     H264eSlice *slice = ctx->slice;
     MppPacket pkt = ctx->packet;
     RK_U8 *p = mpp_packet_get_pos(pkt);
-    RK_S32 size = mpp_packet_get_size(pkt);
     RK_S32 base = ctx->buf_base;
     RK_S32 len = ctx->old_length;
     RK_S32 hw_len_bit = 0;
@@ -179,7 +182,7 @@ MPP_RET h264e_vepu_stream_amend_proc(HalH264eVepuStreamAmend *ctx, RK_U32 poc_ty
         tail_0bit = 0;
         // copy hw stream to stream buffer first
         if (slice->is_multi_slice) {
-            if (!seg) {
+            if ((!seg) || ctx->diable_split_out) {
                 nal_len = get_next_nal(p, &len);
                 last_slice = (len == 0);
             } else {
@@ -214,14 +217,31 @@ MPP_RET h264e_vepu_stream_amend_proc(HalH264eVepuStreamAmend *ctx, RK_U32 poc_ty
         H264eSlice slice_rd;
 
         memcpy(&slice_rd, slice, sizeof(slice_rd));
-        slice_rd.log2_max_frame_num = 16;
-        slice_rd.pic_order_cnt_type = poc_type;
 
-        hw_len_bit = h264e_slice_read(&slice_rd, ctx->src_buf, size);
+        /* update slice by hw_cfg */
+        slice_rd.pic_order_cnt_type = hw_cfg->hw_poc_type;
+        slice_rd.log2_max_frame_num = hw_cfg->hw_log2_max_frame_num_minus4 + 4;
+
+        if (ctx->reorder) {
+            slice_rd.reorder = ctx->reorder;
+            h264e_reorder_init(slice_rd.reorder);
+        }
+        if (ctx->marking) {
+            slice_rd.marking = ctx->marking;
+            h264e_marking_init(slice_rd.marking);
+        }
+
+        hw_len_bit = h264e_slice_read(&slice_rd, ctx->src_buf, nal_len);
 
         // write new header to header buffer
         slice->qp_delta = slice_rd.qp_delta;
         slice->first_mb_in_slice = slice_rd.first_mb_in_slice;
+
+        if (ctx->reorder)
+            slice->reorder = slice_rd.reorder;
+        if (ctx->marking)
+            slice->marking = slice_rd.marking;
+
         sw_len_bit = h264e_slice_write(slice, dst_buf, buf_size);
 
         hw_len_byte = (hw_len_bit + 7) / 8;

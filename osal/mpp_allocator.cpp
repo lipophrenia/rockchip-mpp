@@ -139,7 +139,6 @@ MPP_RET mpp_allocator_get(MppAllocator *allocator,
         p->flags = flags;
     }
 
-
     MPP_RET ret = os_allocator_get(&p->os_api, buffer_type);
 
     if (MPP_OK == ret) {
@@ -189,3 +188,10 @@ MPP_RET mpp_allocator_put(MppAllocator *allocator)
     return MPP_OK;
 }
 
+MppBufferType get_real_allocator_type(const MppAllocator allocator)
+{
+    MppAllocatorImpl *p = (MppAllocatorImpl *)allocator;
+    MppBufferType type = allocator ? p->os_api.type : MPP_BUFFER_TYPE_BUTT;
+
+    return type;
+}

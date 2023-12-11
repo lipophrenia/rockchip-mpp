@@ -17,11 +17,13 @@
 #define MODULE_TAG "vdpu382_com"
 
 #include <string.h>
-
+#include <stdlib.h>
 #include "mpp_log.h"
 #include "mpp_buffer.h"
 #include "mpp_common.h"
 #include "mpp_compat_impl.h"
+#include "mpp_frame_impl.h"
+#include "mpp_env.h"
 
 #include "vdpu382_com.h"
 
@@ -158,6 +160,66 @@ RK_S32 vdpu382_compare_rcb_size(const void *a, const void *b)
     return val;
 }
 
+RK_S32 vdpu382_set_rcbinfo(MppDev dev, Vdpu382RcbInfo *rcb_info)
+{
+    MppDevRcbInfoCfg rcb_cfg;
+    RK_U32 i;
+    /*
+     * RCB_SET_BY_SIZE_SORT_MODE: by size sort
+     * RCB_SET_BY_PRIORITY_MODE: by priority
+     */
+    Vdpu382RcbSetMode_e set_rcb_mode = RCB_SET_BY_PRIORITY_MODE;
+    RK_U32 rcb_priority[RCB_BUF_COUNT] = {
+        RCB_DBLK_ROW,
+        RCB_INTRA_ROW,
+        RCB_SAO_ROW,
+        RCB_INTER_ROW,
+        RCB_FBC_ROW,
+        RCB_TRANSD_ROW,
+        RCB_STRMD_ROW,
+        RCB_INTER_COL,
+        RCB_FILT_COL,
+        RCB_TRANSD_COL,
+    };
+
+    switch (set_rcb_mode) {
+    case RCB_SET_BY_SIZE_SORT_MODE : {
+        Vdpu382RcbInfo info[RCB_BUF_COUNT];
+
+        memcpy(info, rcb_info, sizeof(info));
+        qsort(info, MPP_ARRAY_ELEMS(info),
+              sizeof(info[0]), vdpu382_compare_rcb_size);
+
+        for (i = 0; i < MPP_ARRAY_ELEMS(info); i++) {
+            rcb_cfg.reg_idx = info[i].reg;
+            rcb_cfg.size = info[i].size;
+            if (rcb_cfg.size > 0) {
+                mpp_dev_ioctl(dev, MPP_DEV_RCB_INFO, &rcb_cfg);
+            } else
+                break;
+        }
+    } break;
+    case RCB_SET_BY_PRIORITY_MODE : {
+        Vdpu382RcbInfo *info = rcb_info;
+        RK_U32 index = 0;
+
+        for (i = 0; i < MPP_ARRAY_ELEMS(rcb_priority); i ++) {
+            index = rcb_priority[i];
+
+            rcb_cfg.reg_idx = info[index].reg;
+            rcb_cfg.size = info[index].size;
+            if (rcb_cfg.size > 0) {
+                mpp_dev_ioctl(dev, MPP_DEV_RCB_INFO, &rcb_cfg);
+            }
+        }
+    } break;
+    default:
+        break;
+    }
+
+    return 0;
+}
+
 void vdpu382_setup_statistic(Vdpu382RegCommon *com, Vdpu382RegStatistic *sta)
 {
     com->reg011.pix_range_detection_e = 1;
@@ -183,12 +245,52 @@ void vdpu382_afbc_align_calc(MppBufSlots slots, MppFrame frame, RK_U32 expand)
 {
     RK_U32 ver_stride = 0;
     RK_U32 img_height = mpp_frame_get_height(frame);
+    RK_U32 img_width = mpp_frame_get_width(frame);
+    RK_U32 hdr_stride = (*compat_ext_fbc_hdr_256_odd) ?
+                        (MPP_ALIGN(img_width, 256) | 256) :
+                        (MPP_ALIGN(img_width, 64));
 
     mpp_slots_set_prop(slots, SLOTS_HOR_ALIGN, mpp_align_64);
     mpp_slots_set_prop(slots, SLOTS_VER_ALIGN, mpp_align_16);
+
+    mpp_frame_set_fbc_hdr_stride(frame, hdr_stride);
+
     ver_stride = mpp_align_16(img_height);
     if (*compat_ext_fbc_buf_size) {
         ver_stride += expand;
     }
     mpp_frame_set_ver_stride(frame, ver_stride);
+}
+
+void vdpu382_setup_down_scale(MppFrame frame, MppDev dev, Vdpu382RegCommon *com)
+{
+    RK_U32 ver_stride = mpp_frame_get_ver_stride(frame);
+    RK_U32 hor_stride = mpp_frame_get_hor_stride(frame);
+    RK_U32 down_scale_ver =  MPP_ALIGN(ver_stride >> 1, 16);
+    RK_U32 down_scale_hor =  MPP_ALIGN(hor_stride >> 1, 16);
+    MppFrameFormat fmt = mpp_frame_get_fmt(frame);
+    MppMeta meta = mpp_frame_get_meta(frame);
+    RK_U32 down_scale_y_offset = 0;
+    RK_U32 down_scale_uv_offset = 0;
+
+    if (MPP_FRAME_FMT_IS_FBC(fmt))
+        down_scale_y_offset = mpp_frame_get_fbc_size(frame);
+    else
+        down_scale_y_offset = ver_stride * hor_stride * 3 / 2;
+
+    com->reg012.scale_down_en = 1;
+    com->reg029.scale_down_y_wratio = 2;
+    com->reg029.scale_down_y_hratio = 2;
+    com->reg029.scale_down_c_wratio = 2;
+    com->reg029.scale_down_c_hratio = 2;
+    com->reg030.y_scale_down_hor_stride =  MPP_ALIGN(down_scale_hor, 16) >> 4;
+    com->reg031.uv_scale_down_hor_stride = MPP_ALIGN(down_scale_hor, 16) >> 4;
+
+    down_scale_y_offset = MPP_ALIGN(down_scale_y_offset, 16);
+    mpp_dev_set_reg_offset(dev, 198, down_scale_y_offset);
+    mpp_meta_set_s32(meta, KEY_DEC_TBN_Y_OFFSET, down_scale_y_offset);
+
+    down_scale_uv_offset = down_scale_y_offset + down_scale_hor * down_scale_ver;
+    mpp_dev_set_reg_offset(dev, 199, down_scale_uv_offset);
+    mpp_meta_set_s32(meta, KEY_DEC_TBN_UV_OFFSET, down_scale_uv_offset);
 }

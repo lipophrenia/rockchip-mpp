@@ -9,6 +9,12 @@ ANDROID_ABI="armeabi-v7a with NEON"
 #Specify cmake if needed
 #CMAKE_PROGRAM=
 
+for ARG in "$@"; do
+  if [[ "$ARG" == "-c" ]]; then
+    clear
+  fi
+done
+
 source ../env_setup.sh
 
 ${CMAKE_PROGRAM} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}                   \
@@ -20,7 +26,7 @@ ${CMAKE_PROGRAM} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}                   \
       -DANDROID_ABI=${ANDROID_ABI}                                          \
       -DANDROID_TOOLCHAIN_NAME=${TOOLCHAIN_NAME}                            \
       -DANDROID_NATIVE_API_LEVEL=${NATIVE_API_LEVEL}                        \
-      -DANDROID_STL=system                                                  \
+      -DANDROID_STL=${ANDROID_STL}                                          \
       -DMPP_PROJECT_NAME=mpp                                                \
       -DVPU_PROJECT_NAME=vpu                                                \
       -DHAVE_DRM=ON                                                         \
