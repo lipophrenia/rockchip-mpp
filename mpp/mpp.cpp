@@ -88,7 +88,7 @@ Mpp::Mpp(MppCtx ctx)
       mTaskGetCount(0),
       mPacketGroup(NULL),
       mFrameGroup(NULL),
-      mExternalFrameGroup(0),
+      mExternalBufferMode(0),
       mUsrInPort(NULL),
       mUsrOutPort(NULL),
       mMppInPort(NULL),
@@ -160,7 +160,7 @@ MPP_RET Mpp::init(MppCtxType type, MppCodingType coding)
             mOutputTimeout = MPP_POLL_NON_BLOCK;
 
         if (mCoding != MPP_VIDEO_CodingMJPEG) {
-            mpp_buffer_group_get_internal(&mPacketGroup, MPP_BUFFER_TYPE_ION);
+            mpp_buffer_group_get_internal(&mPacketGroup, MPP_BUFFER_TYPE_ION | MPP_BUFFER_FLAGS_CACHABLE);
             mpp_buffer_group_limit_config(mPacketGroup, 0, 3);
 
             mpp_task_queue_setup(mInputTaskQueue, 4);
@@ -327,7 +327,7 @@ void Mpp::clear()
         mPacketGroup = NULL;
     }
 
-    if (mFrameGroup && !mExternalFrameGroup) {
+    if (mFrameGroup && !mExternalBufferMode) {
         mpp_buffer_group_put(mFrameGroup);
         mFrameGroup = NULL;
     }
@@ -497,9 +497,15 @@ MPP_RET Mpp::get_frame(MppFrame *frame)
     }
 
     if (mFrmOut->list_size()) {
+        MppBuffer buffer;
+
         mFrmOut->del_at_head(&frm, sizeof(frame));
         mFrameGetCount++;
         notify(MPP_OUTPUT_DEQUEUE);
+
+        buffer = mpp_frame_get_buffer(frm);
+        if (buffer)
+            mpp_buffer_sync_ro_begin(buffer);
     } else {
         // NOTE: Add signal here is not efficient
         // This is for fix bug of stucking on decoder parser thread
@@ -530,6 +536,7 @@ MPP_RET Mpp::get_frame_noblock(MppFrame *frame)
     mFrmOut->lock();
     if (mFrmOut->list_size()) {
         mFrmOut->del_at_head(&first, sizeof(frame));
+        mpp_buffer_sync_ro_begin(mpp_frame_get_buffer(first));
         mFrameGetCount++;
     }
     mFrmOut->unlock();
@@ -559,6 +566,7 @@ MPP_RET Mpp::decode(MppPacket packet, MppFrame *frame)
 
         if (mFrmOut->list_size()) {
             mFrmOut->del_at_head(frame, sizeof(*frame));
+            mpp_buffer_sync_ro_begin(mpp_frame_get_buffer(*frame));
             mFrameGetCount++;
             return MPP_OK;
         }
@@ -578,6 +586,7 @@ MPP_RET Mpp::decode(MppPacket packet, MppFrame *frame)
 
             if (mFrmOut->list_size()) {
                 mFrmOut->del_at_head(frame, sizeof(*frame));
+                mpp_buffer_sync_ro_begin(mpp_frame_get_buffer(*frame));
                 mFrameGetCount++;
                 frm_rdy = 1;
             }
@@ -724,6 +733,8 @@ RET:
 
 MPP_RET Mpp::get_packet(MppPacket *packet)
 {
+    MppPacket pkt = NULL;
+
     if (!mInitDone)
         return MPP_ERR_INIT;
 
@@ -757,12 +768,21 @@ MPP_RET Mpp::get_packet(MppPacket *packet)
         goto RET;
     }
 
-    mpp_assert(*packet);
+    pkt = *packet;
+    if (!pkt) {
+        mpp_log_f("get invalid task without output packet\n");
+    } else {
+        MppPacketImpl *impl = (MppPacketImpl *)pkt;
+        MppBuffer buf = impl->buffer;
+        RK_U32 offset = (RK_U32)((char *)impl->pos - (char *)impl->data);
 
-    mpp_dbg_pts("pts %lld\n", mpp_packet_get_pts(*packet));
+        mpp_buffer_sync_ro_partial_begin(buf, offset, impl->length);
+
+        mpp_dbg_pts("pts %lld\n", impl->pts);
+    }
 
     // dump output
-    mpp_ops_enc_get_pkt(mDump, *packet);
+    mpp_ops_enc_get_pkt(mDump, pkt);
 
     ret = enqueue(MPP_PORT_OUTPUT, task);
     if (ret)
@@ -1153,32 +1173,60 @@ MPP_RET Mpp::control_dec(MpiCmd cmd, MppParam param)
         ret = mpp_dec_control(mDec, cmd, param);
     } break;
     case MPP_DEC_SET_EXT_BUF_GROUP: {
-        mFrameGroup = (MppBufferGroup)param;
-        if (param) {
-            mExternalFrameGroup = 1;
+        /*
+         * NOTE: If frame buffer group is configured before decoder init
+         * then the buffer limitation maybe not be correctly setup
+         * without infomation from InfoChange frame.
+         * And the thread signal connection may not be setup here. It
+         * may have a bad effect on MPP efficiency.
+         */
+        if (!mInitDone) {
+            mpp_err("WARNING: setup buffer group before decoder init\n");
+            break;
+        }
+
+        ret = MPP_OK;
+        if (!param) {
+            /* set to internal mode */
+            if (mExternalBufferMode) {
+                /* switch from external mode to internal mode */
+                mpp_assert(mFrameGroup);
+                mpp_buffer_group_set_callback((MppBufferGroupImpl *)mFrameGroup,
+                                              NULL, NULL);
+                mFrameGroup = NULL;
+            } else {
+                /* keep internal buffer mode cleanup old buffers */
+                if (mFrameGroup)
+                    mpp_buffer_group_clear(mFrameGroup);
+            }
+
+            mpp_dbg_info("using internal buffer group %p\n", mFrameGroup);
+            mExternalBufferMode = 0;
+        } else {
+            /* set to external mode */
+            if (mExternalBufferMode) {
+                /* keep external buffer mode */
+                if (mFrameGroup != param) {
+                    /* switch to new buffer group */
+                    mpp_assert(mFrameGroup);
+                    mpp_buffer_group_set_callback((MppBufferGroupImpl *)mFrameGroup,
+                                                  NULL, NULL);
+                } else {
+                    /* keep old group the external group user should cleanup its old buffers */
+                }
+            } else {
+                /* switch from intenal mode to external mode */
+                if (mFrameGroup)
+                    mpp_buffer_group_put(mFrameGroup);
+            }
 
             mpp_dbg_info("using external buffer group %p\n", mFrameGroup);
 
-            if (mInitDone) {
-                ret = mpp_buffer_group_set_callback((MppBufferGroupImpl *)param,
-                                                    mpp_notify_by_buffer_group,
-                                                    (void *)this);
-
-                notify(MPP_DEC_NOTIFY_EXT_BUF_GRP_READY);
-            } else {
-                /*
-                 * NOTE: If frame buffer group is configured before decoder init
-                 * then the buffer limitation maybe not be correctly setup
-                 * without infomation from InfoChange frame.
-                 * And the thread signal connection may not be setup here. It
-                 * may have a bad effect on MPP efficiency.
-                 */
-                mpp_err("WARNING: setup buffer group before decoder init\n");
-            }
-        } else {
-            /* The buffer group should be destroyed before */
-            mExternalFrameGroup = 0;
-            ret = MPP_OK;
+            mFrameGroup = (MppBufferGroup)param;
+            mpp_buffer_group_set_callback((MppBufferGroupImpl *)mFrameGroup,
+                                          mpp_notify_by_buffer_group, (void *)this);
+            mExternalBufferMode = 1;
+            notify(MPP_DEC_NOTIFY_EXT_BUF_GRP_READY);
         }
     } break;
     case MPP_DEC_SET_INFO_CHANGE_READY: {
